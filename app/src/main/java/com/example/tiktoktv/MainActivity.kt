@@ -2,6 +2,8 @@ package com.example.tiktoktv
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
@@ -29,19 +31,30 @@ class MainActivity : Activity() {
     private var videoMode = true      // true = el control remoto maneja el video
     private var centerLong = false
     private var quality = 0           // índice dentro de QUALITIES
+    private var showDiag = true       // muestra el viewport real al cargar
 
     companion object {
         const val HOME = "https://www.tiktok.com/foryou"
 
-        // Ancho de renderizado en píxeles reales. Menos píxeles = más fluido.
-        // Se cambia con el botón MENÚ / ROJO / INFO del control remoto.
-        val QUALITIES = intArrayOf(960, 1280, 1920)
+        // Ancho del viewport en píxeles CSS (= píxeles reales de renderizado).
+        // La app lo escala a pantalla completa, así que ocupa todo el televisor
+        // en cualquier resolución. Menos píxeles = más fluido.
+        // Botón MENÚ / ROJO / INFO del control remoto para rotar.
+        val QUALITIES = intArrayOf(1280, 1600, 1920)
 
         // Hosts de analítica. Lista conservadora: si algo se rompe, vacíala.
         val BLOCKED_HOSTS = listOf(
             "google-analytics.com", "googletagmanager.com",
             "doubleclick.net", "sentry.io"
         )
+    }
+
+    // Densidad fija: 1 píxel CSS = 1 píxel real, sin importar lo que reporte la caja.
+    override fun attachBaseContext(newBase: Context) {
+        val config = Configuration(newBase.resources.configuration)
+        config.densityDpi = 160
+        config.fontScale = 1f
+        super.attachBaseContext(newBase.createConfigurationContext(config))
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -56,8 +69,10 @@ class MainActivity : Activity() {
             View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
 
         tvScript = assets.open("tv.js").bufferedReader().use { it.readText() }
+
+        // Se guarda con otro nombre de clave para ignorar el valor de la versión anterior
         quality = getSharedPreferences("tv", MODE_PRIVATE)
-            .getInt("quality", 0).coerceIn(0, QUALITIES.size - 1)
+            .getInt("quality2", 0).coerceIn(0, QUALITIES.size - 1)
 
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         web = WebView(this)
@@ -82,13 +97,19 @@ class MainActivity : Activity() {
             domStorageEnabled = true
             mediaPlaybackRequiresUserGesture = false
             setSupportZoom(false)
+            builtInZoomControls = false
+            displayZoomControls = false
             setSupportMultipleWindows(false)
+            textZoom = 100
+            useWideViewPort = true
+            loadWithOverviewMode = false
             // User-agent de escritorio, conservando la versión real de Chrome del WebView
             userAgentString = userAgentString
                 .replace(Regex("\\(Linux; Android[^)]*\\)"), "(X11; Linux x86_64)")
                 .replace(Regex("Version/\\d+\\.\\d+ "), "")
                 .replace(" Mobile", "")
         }
+        web.setInitialScale(0)
 
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
@@ -121,12 +142,28 @@ class MainActivity : Activity() {
             override fun onPageFinished(view: WebView, url: String?) {
                 view.evaluateJavascript(tvScript, null)
                 view.evaluateJavascript("window.tv && tv.setUI(${!videoMode})", null)
+
+                if (showDiag) {
+                    showDiag = false
+                    view.evaluateJavascript(
+                        "(innerWidth+'x'+innerHeight+' @'+devicePixelRatio)"
+                    ) { r ->
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Viewport CSS: ${r.trim('"')}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
             }
         }
         web.requestFocus()
     }
 
-    /** Renderiza el WebView a menor resolución y lo escala a pantalla completa por GPU. */
+    /**
+     * Renderiza el WebView en un viewport de QUALITIES[quality] px de ancho
+     * (misma proporción que la pantalla) y lo escala a pantalla completa.
+     */
     private fun applyRenderScale() {
         val target = QUALITIES[quality]
         val dm = DisplayMetrics()
@@ -144,7 +181,7 @@ class MainActivity : Activity() {
         }
 
         val scale = dm.widthPixels.toFloat() / target
-        val h = (dm.heightPixels / scale).toInt()
+        val h = Math.ceil((dm.heightPixels / scale).toDouble()).toInt()
         web.layoutParams = FrameLayout.LayoutParams(target, h)
         web.pivotX = 0f
         web.pivotY = 0f
@@ -154,8 +191,9 @@ class MainActivity : Activity() {
 
     private fun cycleQuality() {
         quality = (quality + 1) % QUALITIES.size
-        getSharedPreferences("tv", MODE_PRIVATE).edit().putInt("quality", quality).apply()
+        getSharedPreferences("tv", MODE_PRIVATE).edit().putInt("quality2", quality).apply()
         applyRenderScale()
+        showDiag = true
         web.reload()
         Toast.makeText(this, "Calidad: ${QUALITIES[quality]} px", Toast.LENGTH_SHORT).show()
     }
